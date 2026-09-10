@@ -1,49 +1,46 @@
 /**
- * Event store backed by an append-only JSONL file.
- *
- * Chosen for zero-dependency portability: a user can `npm i uba-ai` and
- * immediately persist events to ./uba-data/events.jsonl without any
- * database setup. The store is the single source of truth consumed by
- * the sessionizer and all analysis layers.
+ * Event store: the ingestion front-door on top of the pluggable storage
+ * layer. Handles id/timestamp generation, config persistence, and backend
+ * selection, while storage.ts owns the actual bytes on disk.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { TrackInput, UBAConfig, UBAEvent } from "./types.ts";
+import { resolveConfig, type UBAConfig } from "./config.ts";
+import { createStorage, type EventStorage } from "./storage.ts";
+import type { TrackInput, UBAEvent } from "./types.ts";
 
-/** Sensible defaults applied when no config file exists yet. */
-export const DEFAULT_CONFIG: UBAConfig = {
-  dataDir: "uba-data",
-  sessionTimeoutMs: 30 * 60 * 1000,
-  segmentCount: 3,
-  anomalyZThreshold: 2,
-};
+export { DEFAULT_CONFIG } from "./config.ts";
+export type { UBAConfig, StorageConfig, AIConfig } from "./config.ts";
 
 /**
  * The main entry point for ingesting and reading events.
- * Create one with createStore() or the high-level createUBAClient().
+ * Create one directly or through the high-level createUBAClient().
  */
 export class EventStore {
   readonly config: UBAConfig;
-  private readonly eventsPath: string;
+  /** Active persistence backend (jsonl or sqlite), chosen from config. */
+  readonly storage: EventStorage;
   private readonly configPath: string;
 
   constructor(config: Partial<UBAConfig> = {}) {
-    this.config = { ...DEFAULT_CONFIG, ...config };
+    this.config = resolveConfig(config);
     this.config.dataDir = resolve(this.config.dataDir);
-    this.eventsPath = join(this.config.dataDir, "events.jsonl");
     this.configPath = join(this.config.dataDir, "uba.config.json");
+    this.storage = createStorage(this.config.dataDir, this.config.storage.backend, this.config.storage.sqliteFile);
   }
 
-  /** Create the data directory and persist the resolved config. Idempotent. */
+  /** Create the data directory, persist config, and initialize storage. */
   init(): void {
     mkdirSync(this.config.dataDir, { recursive: true });
     writeFileSync(this.configPath, JSON.stringify(this.config, null, 2), "utf8");
+    this.storage.init();
   }
 
   /**
    * Load the persisted config from a data directory if present, so CLI
-   * invocations reuse the settings chosen at `uba init` time.
+   * invocations reuse the settings chosen at `uba init` time. Missing or
+   * unknown fields fall back to defaults via resolveConfig.
    */
   static loadFrom(dataDir: string): EventStore {
     const configPath = join(resolve(dataDir), "uba.config.json");
@@ -67,35 +64,35 @@ export class EventStore {
       timestamp: input.timestamp ?? Date.now(),
       ...(input.properties ? { properties: input.properties } : {}),
     };
-    mkdirSync(this.config.dataDir, { recursive: true });
-    appendFileSync(this.eventsPath, JSON.stringify(event) + "\n", "utf8");
+    this.storage.append(event);
     return event;
   }
 
-  /** Append many events at once (used by import and demo generation). */
+  /** Append many events in one batched write (used by import and demo). */
   trackBatch(inputs: TrackInput[]): UBAEvent[] {
-    return inputs.map((input) => this.track(input));
+    const events: UBAEvent[] = inputs.map((input) => ({
+      id: input.id ?? randomUUID(),
+      userId: input.userId,
+      event: input.event,
+      timestamp: input.timestamp ?? Date.now(),
+      ...(input.properties ? { properties: input.properties } : {}),
+    }));
+    this.storage.appendMany(events);
+    return events;
   }
 
-  /** Read every stored event, skipping malformed lines defensively. */
+  /** Read every stored event, ordered by timestamp. */
   readAll(): UBAEvent[] {
-    if (!existsSync(this.eventsPath)) return [];
-    const lines = readFileSync(this.eventsPath, "utf8").split("\n");
-    const events: UBAEvent[] = [];
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        events.push(JSON.parse(trimmed) as UBAEvent);
-      } catch {
-        // Ignore corrupt lines: partial writes should not brick the dataset.
-      }
-    }
-    return events;
+    return this.storage.readAll();
   }
 
   /** Delete all stored events (keeps config). Mostly useful in tests. */
   clear(): void {
-    if (existsSync(this.eventsPath)) writeFileSync(this.eventsPath, "", "utf8");
+    this.storage.clear();
+  }
+
+  /** Release storage resources (closes the SQLite handle when in use). */
+  close(): void {
+    this.storage.close();
   }
 }

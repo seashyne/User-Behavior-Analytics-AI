@@ -18,6 +18,9 @@ import { EventStore } from "./store.ts";
 import { UBAClient } from "./index.ts";
 import { generateDemoEvents } from "./demo.ts";
 import { buildOfflineNarrative } from "./ai.ts";
+import { viewEvent, CONTENT_TIME_EVENT } from "./content.ts";
+import { formatDuration } from "./insights.ts";
+import { version as pkgVersion, patchUpdates } from "./version.ts";
 import type { AnalysisReport, TrackInput } from "./types.ts";
 
 /** Minimal flag parser: returns positional args plus --key value pairs. */
@@ -42,20 +45,30 @@ function parseArgs(argv: string[]): { positionals: string[]; flags: Record<strin
   return { positionals, flags };
 }
 
-const HELP = `uba-ai - User Behavior Analytics AI
+const HELP = `uba-ai - User Behavior Analytics AI (v${pkgVersion})
 
 Usage:
   uba init                          Create ./uba-data with default config
   uba demo [--users N] [--days N]   Generate a synthetic demo dataset
   uba track <event> --user <id>     Record one event (--props '{"a":1}' optional)
+  uba view <contentId> --user <id>  Record a content view (what the user is looking at)
+                                    [--type page|article|image|video] [--title "..."]
+                                    [--url "..."] [--dwell 45000] (ms on content)
   uba import <file.json>            Import an array of events from a JSON file
   uba analyze [--funnel a,b,c]      Run full analysis (--json for machine output)
   uba report [--ai]                 Print narrative report (--ai forces LLM mode)
   uba clear                         Delete all stored events
+  uba version                       Show version and patch update history
 
 Global flags:
   --dir <path>   Data directory (default: ./uba-data or saved config)
   --json         Machine-readable output for analyze/report
+
+Storage & config:
+  All settings live in <dataDir>/uba.config.json with built-in defaults, so
+  nothing must be configured. To switch persistence from the default JSONL
+  file to SQL, set:  "storage": { "backend": "sqlite" }  (uses Node's built-in
+  node:sqlite, requires Node >= 22.5, database file: uba-data/uba.sqlite).
 
 AI narrative (optional):
   Set UBA_AI_API_KEY to enable LLM reports against any OpenAI-compatible API.
@@ -118,6 +131,16 @@ function printAnalysis(report: AnalysisReport, funnelSteps: string[]): void {
     line();
   }
 
+  if (report.content && report.content.topContent.length > 0) {
+    line("CONTENT ENGAGEMENT (what users look at, and for how long)");
+    for (const item of report.content.topContent.slice(0, 8)) {
+      const label = item.title ?? item.contentId;
+      const dwell = item.totalDwellMs > 0 ? `, ${formatDuration(item.totalDwellMs)} dwell` : "";
+      line(`  ${label} (${item.contentType}): ${item.views} views, ${item.uniqueViewers} viewers${dwell}`);
+    }
+    line();
+  }
+
   line("INSIGHTS");
   if (insights.length === 0) line("  Nothing notable - all metrics within normal ranges.");
   for (const i of insights) {
@@ -137,7 +160,9 @@ async function main(): Promise<void> {
   }
 
   const dataDir = typeof flags["dir"] === "string" ? flags["dir"] : "uba-data";
-  const client = new UBAClient({ dataDir });
+  // Load persisted uba.config.json (if any) so CLI runs honor the user's
+  // storage backend and analysis settings instead of silently using defaults.
+  const client = new UBAClient(EventStore.loadFrom(dataDir).config);
   const store = client.store;
 
   switch (command) {
@@ -253,6 +278,60 @@ async function main(): Promise<void> {
         console.log(JSON.stringify({ source: "offline", narrative }, null, 2));
       } else {
         console.log(buildOfflineNarrative(report));
+      }
+      break;
+    }
+
+    case "view": {
+      // Record what a user is looking at: uba view <contentId> --user <id>
+      // [--type page|article|image|video] [--title "..."] [--url "..."] [--dwell ms]
+      const contentId = positionals[1];
+      const userId = typeof flags["user"] === "string" ? flags["user"] : undefined;
+      if (!contentId || !userId) {
+        console.error('Usage: uba view <contentId> --user <id> [--type article] [--title "..."] [--url "..."] [--dwell 45000]');
+        process.exitCode = 1;
+        break;
+      }
+      const contentType = typeof flags["type"] === "string" ? flags["type"] : "page";
+      const title = typeof flags["title"] === "string" ? flags["title"] : undefined;
+      const url = typeof flags["url"] === "string" ? flags["url"] : undefined;
+      const now = Date.now();
+      const view = {
+        contentType,
+        contentId,
+        ...(title !== undefined ? { title } : {}),
+        ...(url !== undefined ? { url } : {}),
+      };
+      store.track(viewEvent(userId, view, now));
+      // --dwell also records the paired content_time event with elapsed ms.
+      const dwell = flags["dwell"];
+      if (typeof dwell === "string") {
+        const dwellMs = Number(dwell);
+        if (!Number.isFinite(dwellMs) || dwellMs < 0) {
+          console.error("--dwell must be a non-negative number of milliseconds, e.g. --dwell 45000");
+          process.exitCode = 1;
+          break;
+        }
+        store.track({
+          userId,
+          event: CONTENT_TIME_EVENT,
+          timestamp: now + dwellMs,
+          properties: { contentType, contentId, ...(title !== undefined ? { title } : {}), dwellMs },
+        });
+        console.log(`Viewed ${contentType} "${contentId}" for ${dwellMs}ms as ${userId}`);
+      } else {
+        console.log(`Viewed ${contentType} "${contentId}" as ${userId}`);
+      }
+      break;
+    }
+
+    case "version": {
+      console.log(`uba-ai v${pkgVersion}`);
+      for (const record of patchUpdates) {
+        console.log(`\n${record.version} (${record.date})`);
+        for (const update of record.patchUpdates) {
+          console.log(`  [${update.type}] ${update.message}`);
+        }
       }
       break;
     }

@@ -28,23 +28,12 @@ export type TrackInput = Omit<UBAEvent, "id" | "timestamp"> & {
   timestamp?: number;
 };
 
-/** Runtime configuration persisted in uba.config.json inside the data dir. */
-export interface UBAConfig {
-  /** Directory holding events.jsonl and uba.config.json. */
-  dataDir: string;
-  /** Inactivity gap (ms) that closes a session. Default: 30 minutes. */
-  sessionTimeoutMs: number;
-  /** Number of behavioral segments for k-means. Default: 3. */
-  segmentCount: number;
-  /** Z-score threshold above which a daily count is an anomaly. Default: 2. */
-  anomalyZThreshold: number;
-  /** Optional OpenAI-compatible endpoint for AI narrative reports. */
-  ai?: {
-    baseUrl: string;
-    model: string;
-    apiKeyEnv: string;
-  };
-}
+/**
+ * Runtime configuration lives in config.ts (sectioned, with defaults for
+ * every field). Re-exported here so existing imports keep working.
+ */
+export type { UBAConfig, StorageConfig, AIConfig } from "./config.ts";
+import type { ContentReport } from "./content.ts";
 
 /** A group of events belonging to one continuous visit. */
 export interface Session {
@@ -111,7 +100,7 @@ export interface Segment {
 /** A single actionable finding produced by the rule-based insight engine. */
 export interface Insight {
   severity: "info" | "warning" | "critical";
-  category: "engagement" | "funnel" | "retention" | "anomaly" | "segmentation";
+  category: "engagement" | "funnel" | "retention" | "anomaly" | "segmentation" | "content";
   title: string;
   detail: string;
 }
@@ -124,5 +113,7 @@ export interface AnalysisReport {
   funnel: FunnelResult | null;
   anomalies: Anomaly[];
   segments: Segment[];
+  /** Content-level engagement (views + dwell time per content item). */
+  content: ContentReport;
   insights: Insight[];
 }

@@ -127,6 +127,39 @@ export function generateInsights(report: AnalysisReport): Insight[] {
     });
   }
 
+  // Content engagement: what users actually look at and for how long.
+  const { content } = report;
+  if (content && content.topContent.length > 0) {
+    const top = content.topContent[0]!;
+    const topLabel = top.title ?? top.contentId;
+    insights.push({
+      severity: "info",
+      category: "content",
+      title: "Most engaging content identified",
+      detail: `"${topLabel}" (${top.contentType}) holds attention longest: ${formatDuration(top.totalDwellMs)} total dwell across ${top.views} views (${top.uniqueViewers} unique viewers).`,
+    });
+    // High clicks but no measured dwell: either the content fails to hold
+    // attention, or dwell tracking is not wired up for that item.
+    const shallow = content.topContent.find((c) => c.views >= 10 && c.totalDwellMs === 0);
+    if (shallow) {
+      insights.push({
+        severity: "warning",
+        category: "content",
+        title: `No dwell time recorded for "${shallow.title ?? shallow.contentId}"`,
+        detail: `${shallow.views} views but zero measured dwell time. Either the content is not holding attention, or DwellTracker.stop() is never called for it.`,
+      });
+    }
+    const bestType = content.byType[0];
+    if (bestType && content.byType.length > 1) {
+      insights.push({
+        severity: "info",
+        category: "content",
+        title: `Users spend the most time on ${bestType.contentType} content`,
+        detail: `${bestType.contentType}: ${formatDuration(bestType.totalDwellMs)} total dwell over ${bestType.views} views (avg ${formatDuration(bestType.avgDwellMs)} per view).`,
+      });
+    }
+  }
+
   const order = { critical: 0, warning: 1, info: 2 } as const;
   return insights.sort((a, b) => order[a.severity] - order[b.severity]);
 }

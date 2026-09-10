@@ -9,6 +9,7 @@ import { computeFunnel, computeOverview, computeRetention } from "../src/metrics
 import { detectAnomalies } from "../src/anomaly.ts";
 import { segmentUsers } from "../src/segment.ts";
 import { generateInsights } from "../src/insights.ts";
+import { computeContentEngagement } from "../src/content.ts";
 import type { UBAEvent } from "../src/types.ts";
 
 const MINUTE = 60_000;
@@ -129,7 +130,7 @@ test("segmentUsers separates power users from casual users", () => {
 });
 
 test("generateInsights flags critical day-1 retention and no-data state", () => {
-  const empty = { generatedAt: Date.now(), overview: computeOverview([], []), retention: [], funnel: null, anomalies: [], segments: [], insights: [] };
+  const empty = { generatedAt: Date.now(), overview: computeOverview([], []), retention: [], funnel: null, anomalies: [], segments: [], content: computeContentEngagement([]), insights: [] };
   const emptyInsights = generateInsights(empty);
   assert.equal(emptyInsights.length, 1);
   assert.equal(emptyInsights[0]!.title, "No data yet");
@@ -141,7 +142,7 @@ test("generateInsights flags critical day-1 retention and no-data state", () => 
   for (let u = 0; u < 2; u++) events.push(ev(`u${u}`, "page_view", base + DAY));
   const sessions = sessionize(events, 30 * MINUTE);
   const overview = computeOverview(events, sessions);
-  const report = { generatedAt: Date.now(), overview, retention: computeRetention(events, 2), funnel: null, anomalies: [], segments: [], insights: [] };
+  const report = { generatedAt: Date.now(), overview, retention: computeRetention(events, 2), funnel: null, anomalies: [], segments: [], content: computeContentEngagement(events), insights: [] };
   const insights = generateInsights(report);
   const critical = insights.find((i) => i.severity === "critical");
   assert.ok(critical, "expected a critical retention insight");

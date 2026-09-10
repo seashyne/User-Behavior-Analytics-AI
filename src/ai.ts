@@ -75,6 +75,16 @@ export function buildOfflineNarrative(report: AnalysisReport): string {
     lines.push("");
   }
 
+  if (report.content && report.content.topContent.length > 0) {
+    lines.push("CONTENT ENGAGEMENT (what users look at, and for how long)");
+    for (const item of report.content.topContent.slice(0, 5)) {
+      const label = item.title ?? item.contentId;
+      const dwell = item.totalDwellMs > 0 ? `, ${formatDuration(item.totalDwellMs)} total dwell` : "";
+      lines.push(`- ${label} (${item.contentType}): ${item.views} views, ${item.uniqueViewers} viewers${dwell}`);
+    }
+    lines.push("");
+  }
+
   lines.push("KEY INSIGHTS");
   if (insights.length === 0) {
     lines.push("- No notable findings; metrics are within normal ranges.");
@@ -98,6 +108,14 @@ function compactForLLM(report: AnalysisReport): unknown {
     funnel: report.funnel,
     anomalies: report.anomalies.slice(0, 10),
     segments: report.segments.map((s) => ({ label: s.label, userCount: s.userCount, centroid: s.centroid })),
+    content: report.content
+      ? {
+          totalViews: report.content.totalViews,
+          totalDwellMs: report.content.totalDwellMs,
+          byType: report.content.byType,
+          topContent: report.content.topContent.slice(0, 10),
+        }
+      : null,
     insights: report.insights,
   };
 }

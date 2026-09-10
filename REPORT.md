@@ -104,3 +104,60 @@ npm publish        # prepublishOnly จะรัน build ให้อัตโ�
 - Path analysis / Markov transition ระหว่าง events
 - Cohort retention แบบ bounded (แยกตามวันที่ผู้ใช้เข้ามาครั้งแรก)
 - Export รายงานเป็น HTML/PDF
+
+---
+
+# Work & Version Report - uba-ai v0.2.0
+
+Date: 2026-09-10
+Active version: `0.2.0` - sync แล้วทั้งใน [package.json](package.json) และ [src/version.ts](src/version.ts) (ค่าคงที่ `version` + `patchUpdates`) และบันทึกใน [CHANGELOG.md](CHANGELOG.md)
+
+## 1. เป้าหมายของรอบนี้
+
+ต่อยอดจากคำถามของผู้ใช้ 3 ข้อ: (1) ต่อ SQL ได้ไหม (2) ให้ผู้ใช้ตั้งค่าแยกเป็น .json โดยมี default ให้ครบ (3) เก็บข้อมูลละเอียดแค่ไหน - รู้ได้ไหมว่าผู้ใช้กำลังดูส่วนไหน กำลังอ่านอะไร เห็นภาพอะไร
+
+## 2. สิ่งที่เพิ่มใน v0.2.0
+
+### Storage layer ต่อ SQL ได้ (ยังคง zero dependencies)
+
+- Interface `EventStorage` ใหม่ใน [src/storage.ts](src/storage.ts) แยก persistence ออกจาก logic
+- `JsonlStorage` - พฤติกรรมเดิม (default) ย้ายออกจาก store มาอยู่ชั้น storage พร้อม batched write (append ครั้งเดียวทั้งก้อนแทนทีละบรรทัด)
+- `SqliteStorage` - SQL backend ใช้ `node:sqlite` ที่ build-in มากับ Node (>= 22.5) จึงไม่ต้องเพิ่ม dependency ภายนอกเลย: ตาราง `events` พร้อม index บน timestamp/user_id/event, properties เก็บเป็น JSON text column, bulk import รันใน transaction เดียว, โหลด module แบบ lazy เพื่อไม่ให้ผู้ใช้ Node 20 บน backend jsonl ได้รับผลกระทบ และมี error message ชัดเจนถ้า Node เก่าเกินไปแล้วเลือก sqlite
+- เพิ่ม `close()` ใน interface - จำเป็นบน Windows เพราะ handle ของ SQLite ที่เปิดค้างจะล็อกไฟล์ (เจอจริงตอนเทสต์: EPERM ตอนลบ temp dir)
+
+### Config แยกส่วนใน .json พร้อม default ครบ
+
+- [src/config.ts](src/config.ts): `UBAConfig` แบ่งเป็น section (`storage`, `ai`, analysis settings) ทุก field มี default ใน `DEFAULT_CONFIG` และ `resolveConfig()` deep-merge ราย field - ตั้ง `{"storage":{"backend":"sqlite"}}` เฉยๆ ก็ได้ `sqliteFile` default มาด้วย
+- CLI ทุกคำสั่งตอนนี้โหลด `uba.config.json` จาก data dir ก่อน (ผ่าน `EventStore.loadFrom`) - เดิม CLI ใช้ default เสมอ ซึ่งจะทำให้ผู้ใช้ที่ตั้ง sqlite ไว้แต่ CLI อ่าน jsonl
+- บันทึก config ทั้งหมดลง `<dataDir>/uba.config.json` ตอน `uba init` ผู้ใช้แก้ไฟล์นี้ได้เลย
+
+### Content-level tracking: รู้ว่าผู้ใช้กำลังดูอะไร อ่านอะไร เห็นภาพอะไร
+
+- [src/content.ts](src/content.ts): convention event คู่ `content_view` (content ปรากฏ) + `content_time` (content หายไป พร้อม `dwellMs` และ optional `visibleRatio`)
+- API ฝั่งผู้ใช้: `client.view(userId, { contentType, contentId, title, url })` แบบ one-shot และ `client.watch(...)` คืน `DwellTracker` ที่ `start()`/`stop()` จับเวลาระหว่างที่ผู้ใช้มอง content นั้นอยู่ (ใน browser ผูกกับ IntersectionObserver / route change / visibilitychange ได้เลย)
+- `computeContentEngagement()` rollup ต่อ item (views, unique viewers, total/avg dwell, title) และต่อ type (article/image/page/video) - เข้าไปอยู่ใน `AnalysisReport.content`, ส่วน CONTENT ENGAGEMENT ของ `uba analyze`/`uba report`, payload ที่ส่งให้ LLM และกฎใหม่ใน insight engine (content ที่ดึง attention มากสุด, content ที่ views สูงแต่ไม่มีการวัด dwell = warning)
+- CLI ใหม่: `uba view <contentId> --user <id> [--type ...] [--title ...] [--dwell ms]`
+- demo generator สร้าง content events ด้วย (product hero image ทุกการดูสินค้า + blog article สำหรับ power users) ทำให้ `uba demo` แสดงชั้น content ทันที
+
+### ระบบบันทึกการทำงาน + version
+
+- [src/version.ts](src/version.ts): `version` + `patchUpdates` (VersionRecord ต่อ release, แยกรายการ feat/fix/improve/docs/build) ตามรูปแบบ `src/app/version.ts` ของ ARLAY - เป็น single source of truth ในโค้ด
+- คำสั่งใหม่ `uba version` แสดงเวอร์ชันปัจจุบันและประวัติ patch ทั้งหมด
+- [CHANGELOG.md](CHANGELOG.md) บันทึก v0.1.0 และ v0.2.0 ละเอียด
+
+## 3. การตรวจสอบ (Verification)
+
+- `tsc -p tsconfig.json` strict mode: ผ่าน 0 errors
+- Tests: ผ่าน 18/18 (เพิ่ม 8 ตัวใหม่: SQLite round-trip เทียบ JSONL, backend selection จาก config + reopen, resolveConfig deep-merge, factory, viewEvent, DwellTracker start/stop/no-op, content engagement aggregation, end-to-end client.watch -> analyze -> insights)
+- CLI smoke test บน SQLite backend จริง: init -> แก้ config เป็น sqlite -> demo 2,118 events -> `uba view` พร้อม dwell -> analyze แสดง CONTENT ENGAGEMENT ถูกต้อง -> `uba version` แสดง patchUpdates ครบ
+- ปัญหาที่เจอและแก้ระหว่างทาง: (1) Node strip-only ไม่รองรับ constructor parameter properties ใน `DwellTracker` - เปลี่ยนเป็น explicit fields (2) EPERM ตอนลบ temp dir บน Windows เพราะ SQLite handle เปิดค้าง - เพิ่ม `close()` และย้ายเข้า finally ในเทสต์ (3) expectation ใน storage test ชี้ index ผิดหลัง readAll เริ่ม sort ตาม timestamp
+
+## 4. Cross-component impact
+
+- `AnalysisReport` เพิ่ม field `content` - consumers ที่อัปเดตแล้ว: insights.ts, ai.ts (narrative + LLM payload), cli.ts (printAnalysis), index.ts (analyze), tests ทุกตัวที่สร้าง report literal
+- `UBAConfig` ย้ายจาก types.ts ไป config.ts - types.ts re-export ไว้เพื่อไม่ให้ import เดิมพัง, index.ts export ทั้งจาก config.ts โดยตรง
+- `EventStore` API เดิมคงครบ (track/trackBatch/readAll/clear/init/loadFrom) เพิ่ม `storage`, `close()` - โค้ดผู้ใช้ v0.1 ไม่ต้องแก้
+
+## 5. ค้างไว้รอผู้ใช้
+
+- npm publish v0.2.0 ต้องใช้ OTP ของผู้ใช้ (เหมือนรอบ v0.1.0) - โค้ดพร้อม publish แล้ว

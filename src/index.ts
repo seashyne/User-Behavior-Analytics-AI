@@ -5,6 +5,8 @@
  *   import { createUBAClient } from "uba-ai";
  *   const uba = createUBAClient();          // persists to ./uba-data
  *   uba.track({ userId: "u1", event: "signup" });
+ *   const dwell = uba.watch("u1", { contentType: "article", contentId: "/blog/x" });
+ *   dwell.start();  ...later...  dwell.stop();   // measures reading time
  *   const report = await uba.report();      // full AI analysis
  */
 import { EventStore } from "./store.ts";
@@ -14,10 +16,15 @@ import { detectAnomalies } from "./anomaly.ts";
 import { segmentUsers } from "./segment.ts";
 import { generateInsights } from "./insights.ts";
 import { generateNarrative, type NarrativeOptions } from "./ai.ts";
+import { computeContentEngagement, DwellTracker, viewEvent, type ContentView } from "./content.ts";
 import type { AnalysisReport, TrackInput, UBAConfig, UBAEvent } from "./types.ts";
 
 export * from "./types.ts";
-export { EventStore, DEFAULT_CONFIG } from "./store.ts";
+export { EventStore } from "./store.ts";
+export { DEFAULT_CONFIG, resolveConfig } from "./config.ts";
+export type { UBAConfig, StorageConfig, AIConfig } from "./config.ts";
+export { JsonlStorage, SqliteStorage, createStorage } from "./storage.ts";
+export type { EventStorage } from "./storage.ts";
 export { sessionize } from "./sessionizer.ts";
 export { computeOverview, computeFunnel, computeRetention, dayKey } from "./metrics.ts";
 export { detectAnomalies } from "./anomaly.ts";
@@ -25,6 +32,10 @@ export { extractUserFeatures, kmeans, segmentUsers } from "./segment.ts";
 export { generateInsights, formatDuration } from "./insights.ts";
 export { generateNarrative, buildOfflineNarrative } from "./ai.ts";
 export type { NarrativeOptions } from "./ai.ts";
+export { DwellTracker, computeContentEngagement, viewEvent, CONTENT_VIEW_EVENT, CONTENT_TIME_EVENT } from "./content.ts";
+export type { ContentView, ContentType, ContentReport, ContentEngagement, ContentTypeEngagement, TrackSink } from "./content.ts";
+export { version, patchUpdates } from "./version.ts";
+export type { PatchUpdate, VersionRecord } from "./version.ts";
 
 /** Options for createUBAClient(). */
 export interface UBAClientOptions extends Partial<UBAConfig> {
@@ -47,7 +58,7 @@ export class UBAClient {
     this.retentionDays = retentionDays ?? 7;
   }
 
-  /** Create data dir and persist config. Safe to call multiple times. */
+  /** Create data dir, persist config, initialize storage. Safe to repeat. */
   init(): this {
     this.store.init();
     return this;
@@ -58,9 +69,30 @@ export class UBAClient {
     return this.store.track(input);
   }
 
-  /** Record many events at once. */
+  /** Record many events at once (single batched write). */
   trackBatch(inputs: TrackInput[]): UBAEvent[] {
     return this.store.trackBatch(inputs);
+  }
+
+  /**
+   * Record that a user is looking at a piece of content right now
+   * (page / article / image / video ...). One-shot convenience wrapper
+   * around the content_view event; use watch() when you also want the
+   * dwell-time measurement.
+   */
+  view(userId: string, view: ContentView, timestamp?: number): UBAEvent {
+    return this.store.track(viewEvent(userId, view, timestamp));
+  }
+
+  /**
+   * Create a DwellTracker for one user + content item: start() records the
+   * view and starts the clock, stop() records content_time with elapsed
+   * dwellMs. Wire it to visibility signals (IntersectionObserver, route
+   * changes, tab focus) in a browser, or call start/stop manually on a
+   * server or in scripts.
+   */
+  watch(userId: string, view: ContentView): DwellTracker {
+    return new DwellTracker(this.store, userId, view);
   }
 
   /** Read all stored events. */
@@ -68,9 +100,14 @@ export class UBAClient {
     return this.store.readAll();
   }
 
+  /** Release storage resources (closes the SQLite handle when in use). */
+  close(): void {
+    this.store.close();
+  }
+
   /**
    * Run the full analysis pipeline: sessionize -> metrics -> funnel ->
-   * retention -> anomalies -> segments -> insights.
+   * retention -> content engagement -> anomalies -> segments -> insights.
    * This is a pure computation over whatever events are currently stored.
    */
   analyze(funnelSteps?: string[]): AnalysisReport {
@@ -79,6 +116,7 @@ export class UBAClient {
     const overview = computeOverview(events, sessions);
     const steps = funnelSteps ?? this.funnelSteps;
     const retention = computeRetention(events, this.retentionDays);
+    const content = computeContentEngagement(events);
     const anomalies = detectAnomalies(overview, this.store.config.anomalyZThreshold);
     const segments = segmentUsers(events, sessions, this.store.config.segmentCount);
 
@@ -89,6 +127,7 @@ export class UBAClient {
       funnel: steps.length > 0 ? computeFunnel(events, steps) : null,
       anomalies,
       segments,
+      content,
       insights: [],
     };
     report.insights = generateInsights(report);

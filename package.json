@@ -1,6 +1,6 @@
 {
   "name": "uba-ai",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "User Behavior Analytics AI - track events, sessionize, detect anomalies, segment users, and generate AI insights. Zero dependencies, works out of the box as a library or CLI.",
   "keywords": [
     "analytics",

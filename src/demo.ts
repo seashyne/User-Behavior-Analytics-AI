@@ -67,8 +67,22 @@ export function generateDemoEvents(options: DemoOptions = {}): TrackInput[] {
         push("page_view", { page: "/home" });
         const depth = archetype === "power" ? 4 + Math.floor(random() * 4) : archetype === "regular" ? 2 + Math.floor(random() * 3) : 1 + Math.floor(random() * 2);
         for (let p = 0; p < depth; p++) {
-          push("page_view", { page: `/product/${Math.floor(random() * 20) + 1}` });
+          const productId = Math.floor(random() * 20) + 1;
+          push("page_view", { page: `/product/${productId}` });
+          // Content-level tracking: the product image the user is looking at,
+          // with a measured dwell time (archetype-scaled attention span).
+          const dwellBase = archetype === "power" ? 20000 : archetype === "regular" ? 9000 : 3000;
+          const dwellMs = Math.floor(dwellBase * (0.5 + random()));
+          push("content_view", { contentType: "image", contentId: `/product/${productId}/hero.jpg`, title: `Product ${productId} hero image`, dwellMs });
+          push("content_time", { contentType: "image", contentId: `/product/${productId}/hero.jpg`, title: `Product ${productId} hero image`, dwellMs });
           if (random() < 0.4) push("button_click", { button: "add_to_cart" });
+        }
+        // Power users also read the blog: article view with real reading time.
+        if (archetype === "power" && random() < 0.5) {
+          const articleId = Math.floor(random() * 5) + 1;
+          const readMs = Math.floor(60000 * (0.5 + random() * 2));
+          push("content_view", { contentType: "article", contentId: `/blog/post-${articleId}`, title: `Blog post ${articleId}`, dwellMs: readMs });
+          push("content_time", { contentType: "article", contentId: `/blog/post-${articleId}`, title: `Blog post ${articleId}`, dwellMs: readMs });
         }
 
         // Funnel: signup -> checkout -> purchase, with archetype-scaled rates.
