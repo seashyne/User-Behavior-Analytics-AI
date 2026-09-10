@@ -14,6 +14,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
+import { migrateSqlite } from "./schema.ts";
 import type { UBAEvent } from "./types.ts";
 
 // ESM-compatible require, used only for the lazy node:sqlite load below.
@@ -126,6 +127,9 @@ export class SqliteStorage implements EventStorage {
       CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id);
       CREATE INDEX IF NOT EXISTS idx_events_name ON events(event);
     `);
+    // Stamp or upgrade the schema version (PRAGMA user_version). Runs on
+    // every open; a current database is a no-op.
+    migrateSqlite(db);
     this.db = db;
     return db;
   }

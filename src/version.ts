@@ -9,7 +9,7 @@
  */
 
 /** Active application version. Must match package.json "version". */
-export const version = "0.2.0";
+export const version = "0.2.1";
 
 /** One documented change within a release. */
 export interface PatchUpdate {
@@ -34,6 +34,16 @@ export interface VersionRecord {
  * from what actually shipped.
  */
 export const patchUpdates: VersionRecord[] = [
+  {
+    version: "0.2.1",
+    date: "2026-09-10",
+    patchUpdates: [
+      { type: "build", message: "CI pipeline (GitHub Actions): strict build + full test matrix on Node 20/22/24 across ubuntu and windows, dist smoke test on Node 20, graceful-failure guard for the sqlite backend on old Node, and npm pack integrity check." },
+      { type: "build", message: "Machine-enforced pre-deploy rule: scripts/check-version.mjs verifies package.json, src/version.ts, and patchUpdates agree; wired into prepublishOnly and CI so an out-of-sync version can never publish." },
+      { type: "feat", message: "Data schema versioning (src/schema.ts): SQLite databases are stamped via PRAGMA user_version, JSONL datasets via the schemaVersion marker in uba.config.json, with a forward-only transactional migration runner for future schema changes." },
+      { type: "docs", message: "Added improvement report and post-v0.2.0 roadmap (docs/IMPROVEMENT_PLAN.md) plus the BMC/pricing strategy report (docs/BMC_PRICING.md)." },
+    ],
+  },
   {
     version: "0.2.0",
     date: "2026-09-10",

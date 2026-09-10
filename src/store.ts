@@ -8,6 +8,7 @@ import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { resolveConfig, type UBAConfig } from "./config.ts";
 import { createStorage, type EventStorage } from "./storage.ts";
+import { migrateJsonlConfigVersion } from "./schema.ts";
 import type { TrackInput, UBAEvent } from "./types.ts";
 
 export { DEFAULT_CONFIG } from "./config.ts";
@@ -33,6 +34,9 @@ export class EventStore {
   /** Create the data directory, persist config, and initialize storage. */
   init(): void {
     mkdirSync(this.config.dataDir, { recursive: true });
+    // Upgrade the JSONL schema marker (config-based; SQLite stamps its own
+    // version via PRAGMA inside migrateSqlite when the backend opens).
+    this.config.schemaVersion = migrateJsonlConfigVersion(this.config.schemaVersion).to;
     writeFileSync(this.configPath, JSON.stringify(this.config, null, 2), "utf8");
     this.storage.init();
   }

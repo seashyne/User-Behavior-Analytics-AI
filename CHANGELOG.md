@@ -4,6 +4,22 @@
 
 แหล่งข้อมูลในโค้ด: `src/version.ts` (`version` + `patchUpdates`) - ดูจาก CLI ได้ด้วย `uba version`
 
+## 0.2.1 - 2026-09-10
+
+### Added (feat)
+
+- **Data schema versioning** ([src/schema.ts](src/schema.ts)) - dataset ทุกชุดมี schema version: SQLite stamp ผ่าน `PRAGMA user_version`, JSONL ผ่าน field `schemaVersion` ใน `uba.config.json` พร้อม forward-only migration runner แบบ transactional (ตามกฎ database ของโปรเจกต์: ไม่แก้ migration ที่ apply แล้ว เพิ่มไฟล์ใหม่เท่านั้น) - วางรากไว้ก่อนมีข้อมูลผู้ใช้จริงเยอะ เพื่อการ migrate อนาคตไม่เจ็บ
+
+### Build
+
+- **CI pipeline (GitHub Actions)** - matrix Node 20/22/24 x ubuntu/windows: strict build ทุกคู่, full test suite บน Node 22+ (type stripping), dist smoke test บน Node 20 (รวม content view + analyze), guard ยืนยันว่า sqlite backend บน Node เก่า fail ด้วยข้อความสุภาพไม่ใช่ crash, และ `npm pack --dry-run` ตรวจความสมบูรณ์ของ tarball
+- **Machine-enforced pre-deploy rule** - `scripts/check-version.mjs` ตรวจว่า package.json, `src/version.ts` (`version`) และ `patchUpdates` ตรงกันทุกจุด รันใน CI ทุก push และใน `prepublishOnly` - เวอร์ชันไม่ sync จะ publish ไม่ผ่านตั้งแต่ต้นทาง
+
+### Docs
+
+- [docs/IMPROVEMENT_PLAN.md](docs/IMPROVEMENT_PLAN.md) - รายงานปรับปรุงหลัง v0.2.0: async storage interface, windowed query + SQL pushdown, browser SDK, uba serve, ลำดับ release v0.2.1-v0.5.x และมติเรื่อง SQL backend (SQLite = core, remote DB = adapter แยก)
+- [docs/BMC_PRICING.md](docs/BMC_PRICING.md) - Business Model Canvas + แผนราคา 6 ช่องทางรายได้
+
 ## 0.2.0 - 2026-09-10
 
 ### Added (feat)

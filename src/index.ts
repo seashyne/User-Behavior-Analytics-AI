@@ -36,6 +36,8 @@ export { DwellTracker, computeContentEngagement, viewEvent, CONTENT_VIEW_EVENT, 
 export type { ContentView, ContentType, ContentReport, ContentEngagement, ContentTypeEngagement, TrackSink } from "./content.ts";
 export { version, patchUpdates } from "./version.ts";
 export type { PatchUpdate, VersionRecord } from "./version.ts";
+export { SCHEMA_VERSION, SQLITE_MIGRATIONS, migrateSqlite, migrateJsonlConfigVersion } from "./schema.ts";
+export type { SqliteMigration } from "./schema.ts";
 
 /** Options for createUBAClient(). */
 export interface UBAClientOptions extends Partial<UBAConfig> {

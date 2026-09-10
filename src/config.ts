@@ -34,6 +34,12 @@ export interface UBAConfig {
   anomalyZThreshold: number;
   /** Where and how events are persisted. Default: JSONL file. */
   storage: StorageConfig;
+  /**
+   * Schema version marker for JSONL datasets (SQLite stamps its version
+   * via PRAGMA user_version instead). Managed by the migration runner in
+   * schema.ts; users should not set this by hand.
+   */
+  schemaVersion: number;
   /** Optional OpenAI-compatible endpoint for AI narrative reports. */
   ai?: AIConfig;
 }
@@ -45,6 +51,7 @@ export const DEFAULT_CONFIG: UBAConfig = {
   segmentCount: 3,
   anomalyZThreshold: 2,
   storage: { backend: "jsonl", sqliteFile: "uba.sqlite" },
+  schemaVersion: SCHEMA_VERSION,
 };
 
 /**
@@ -53,6 +60,7 @@ export const DEFAULT_CONFIG: UBAConfig = {
  * storage.backend keeps the default sqliteFile, matching how users expect
  * a JSON config file to behave.
  */
+import { SCHEMA_VERSION } from "./schema.ts";
 export function resolveConfig(user: Partial<UBAConfig> = {}): UBAConfig {
   const merged: UBAConfig = {
     ...DEFAULT_CONFIG,

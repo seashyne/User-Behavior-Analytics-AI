@@ -1,0 +1,66 @@
+# CI for uba-ai.
+#
+# Matrix rationale:
+# - Node 20: no native TypeScript type stripping, so tests cannot run on src.
+#   This job verifies the strict build, smoke-tests the compiled dist, and
+#   proves the sqlite backend fails with a friendly message (node:sqlite
+#   only exists on Node >= 22.5).
+# - Node 22 / 24: full suite (build + native TS tests) on both OSes, since
+#   Windows file-locking behavior around SQLite is a real failure surface.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [20, 22, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - run: npm ci
+
+      # Pre-deploy rule enforced by machine: package.json and src/version.ts
+      # must agree, and the version must be documented in patchUpdates.
+      - name: Check version sync
+        run: node scripts/check-version.mjs
+
+      - name: Build (strict tsc)
+        run: npm run build
+
+      - name: Test suite (Node 22+ runs TypeScript tests natively)
+        if: matrix.node != 20
+        run: npm test
+
+      - name: Dist smoke test (Node 20 path)
+        if: matrix.node == 20
+        shell: bash
+        run: |
+          node dist/cli.js demo --dir ci-data --users 10 --days 5
+          node dist/cli.js analyze --dir ci-data | grep -q "OVERVIEW"
+          node dist/cli.js view /home --user ci-u1 --dwell 1500 --dir ci-data
+          node dist/cli.js analyze --dir ci-data | grep -q "CONTENT ENGAGEMENT"
+          echo "Node 20 dist smoke OK"
+
+      - name: SQLite guard on Node 20 (must fail gracefully)
+        if: matrix.node == 20
+        shell: bash
+        run: |
+          mkdir -p ci-sql
+          node -e "const fs=require('fs');fs.writeFileSync('ci-sql/uba.config.json',JSON.stringify({dataDir:'ci-sql',storage:{backend:'sqlite',sqliteFile:'uba.sqlite'}}))"
+          node dist/cli.js analyze --dir ci-sql > sqlite-guard.txt 2>&1 && { echo 'FAIL: expected non-zero exit'; exit 1; } || true
+          grep -q "requires Node.js" sqlite-guard.txt && echo "Node 20 sqlite guard OK"
+
+      - name: Package integrity
+        run: npm pack --dry-run

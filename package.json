@@ -1,6 +1,6 @@
 {
   "name": "uba-ai",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "User Behavior Analytics AI - track events, sessionize, detect anomalies, segment users, and generate AI insights. Zero dependencies, works out of the box as a library or CLI.",
   "keywords": [
     "analytics",
@@ -35,8 +35,9 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "check:version": "node scripts/check-version.mjs",
     "prepare": "npm run build",
-    "prepublishOnly": "npm run build",
+    "prepublishOnly": "npm run check:version && npm run build",
     "test": "node --test",
     "demo": "npm run build && node dist/cli.js demo && node dist/cli.js report"
   },
