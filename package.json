@@ -1,0 +1,46 @@
+{
+  "name": "uba-ai",
+  "version": "0.1.0",
+  "description": "User Behavior Analytics AI - track events, sessionize, detect anomalies, segment users, and generate AI insights. Zero dependencies, works out of the box as a library or CLI.",
+  "keywords": [
+    "analytics",
+    "user-behavior",
+    "uba",
+    "ai",
+    "insights",
+    "anomaly-detection",
+    "segmentation",
+    "product-analytics"
+  ],
+  "license": "MIT",
+  "author": "Alenout Project",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "uba": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build",
+    "test": "node --test",
+    "demo": "npm run build && node dist/cli.js demo && node dist/cli.js report"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.4",
+    "typescript": "^5.9.3"
+  }
+}
