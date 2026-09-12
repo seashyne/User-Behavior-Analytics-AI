@@ -28,6 +28,18 @@ export type TrackInput = Omit<UBAEvent, "id" | "timestamp"> & {
   timestamp?: number;
 };
 
+/** Time window for reads and analysis. `until` is exclusive. */
+export interface ReadRange {
+  since?: number;
+  until?: number;
+}
+
+/** Options for UBAClient.analyze()/report(). */
+export interface AnalyzeOptions extends ReadRange {
+  /** Funnel steps to compute; overrides the client default when given. */
+  funnelSteps?: string[];
+}
+
 /**
  * Runtime configuration lives in config.ts (sectioned, with defaults for
  * every field). Re-exported here so existing imports keep working.

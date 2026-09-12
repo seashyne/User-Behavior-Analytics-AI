@@ -4,6 +4,34 @@
 
 แหล่งข้อมูลในโค้ด: `src/version.ts` (`version` + `patchUpdates`) - ดูจาก CLI ได้ด้วย `uba version`
 
+## 0.3.0 - 2026-09-10
+
+### Breaking change: async API
+
+ทุก method ที่เขียนลง/อ่านจาก storage ตอนนี้คืน Promise - ตามแผน [IMPROVEMENT_PLAN](IMPROVEMENT_PLAN.md) ข้อ P1 เพื่อให้ remote SQL backend (Postgres/MySQL adapter) implement ได้โดยไม่ต้องมี API สองชุด สิ่งที่เปลี่ยน:
+
+- `EventStore`/`UBAClient`: `init`, `track`, `trackBatch`, `view`, `events`, `analyze`, `report`, `clear`, `close` เป็น async ทั้งหมด (เติม `await` ข้างหน้า)
+- `DwellTracker.start()/stop()` เป็น async
+- `analyze()` รับทั้ง object (`analyze({ funnelSteps, since, until })`) และ array เดิม (`analyze(["signup", "purchase"])`)
+
+```ts
+// ก่อน (v0.2)                    // หลัง (v0.3)
+uba.init();                       await uba.init();
+uba.track({...});                 await uba.track({...});
+const r = uba.analyze();          const r = await uba.analyze();
+dwell.start(); dwell.stop();      await dwell.start(); await dwell.stop();
+```
+
+### Added (feat)
+
+- **Time-windowed analysis** - `analyze({ since, until })` / `report({...})` จำกัดช่วงเวลาที่วิเคราะห์ และ window ถูก push ลงชั้น storage: backend SQLite แปลงเป็น `WHERE timestamp >= ? AND timestamp < ?` บน index โดยตรง (memory ไม่โตตามขนาด dataset) ส่วน JSONL กรองตอน parse - `until` เป็น exclusive ทั้งสอง backend
+- **CLI time windows** - `uba analyze --since 7d --until 2026-09-01` และ `uba report` รับเหมือนกัน รองรับ relative duration (`30m`, `24h`, `7d`), ISO date/datetime และ epoch ms
+- `UBAClient.close()` - ปล่อย resource ของ storage (ปิด SQLite handle) จาก client โดยตรง
+
+### Improved
+
+- `analyze()` รับ `AnalyzeOptions` object; รูปแบบเดิมที่ส่ง array ของ funnel steps ยังใช้ได้
+
 ## 0.2.1 - 2026-09-10
 
 ### Added (feat)

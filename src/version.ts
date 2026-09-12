@@ -9,7 +9,7 @@
  */
 
 /** Active application version. Must match package.json "version". */
-export const version = "0.2.1";
+export const version = "0.3.0";
 
 /** One documented change within a release. */
 export interface PatchUpdate {
@@ -34,6 +34,17 @@ export interface VersionRecord {
  * from what actually shipped.
  */
 export const patchUpdates: VersionRecord[] = [
+  {
+    version: "0.3.0",
+    date: "2026-09-10",
+    patchUpdates: [
+      { type: "feat", message: "Async storage contract (breaking): every EventStorage method now returns a Promise, so remote SQL backends (Postgres/MySQL adapters, cloud storage) are implementable without a second API surface." },
+      { type: "feat", message: "Time-windowed analysis: analyze()/report() accept { since, until } and the window is pushed into storage reads - the SQLite backend turns it into a WHERE clause on the timestamp index, keeping memory bounded on large datasets. CLI equivalents: uba analyze --since 7d / --until 2026-09-01 (relative durations, ISO dates, or epoch ms)." },
+      { type: "feat", message: "UBAClient gained close() alongside the store for deterministic resource release." },
+      { type: "improve", message: "UBAClient.analyze() accepts an AnalyzeOptions object while the older plain funnel-steps array form keeps working." },
+      { type: "docs", message: "README migration guide for the v0.2 -> v0.3 async API change." },
+    ],
+  },
   {
     version: "0.2.1",
     date: "2026-09-10",

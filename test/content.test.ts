@@ -25,15 +25,16 @@ test("viewEvent builds a content_view input with all fields", () => {
   assert.equal(input.properties?.["section"], "intro");
 });
 
-test("DwellTracker emits content_view then content_time with elapsed ms", () => {
+test("DwellTracker emits content_view then content_time with elapsed ms", async () => {
   const tracked: TrackInput[] = [];
+  // Sync fake sink: valid against the MaybePromise TrackSink contract.
   const sink = { track: (input: TrackInput) => { tracked.push(input); return { id: "x", timestamp: 0, ...input } as UBAEvent; } };
   const dwell = new DwellTracker(sink, "u1", { contentType: "image", contentId: "img-9", title: "Hero" });
 
   assert.equal(dwell.active, false);
-  dwell.start(1_000);
+  await dwell.start(1_000);
   assert.equal(dwell.active, true);
-  const stopEvent = dwell.stop(6_000, 0.75);
+  const stopEvent = await dwell.stop(6_000, 0.75);
   assert.equal(dwell.active, false);
 
   assert.equal(tracked.length, 2);
@@ -45,7 +46,7 @@ test("DwellTracker emits content_view then content_time with elapsed ms", () => 
   assert.ok(stopEvent);
 
   // stop() before start() is a no-op instead of emitting bogus data.
-  assert.equal(dwell.stop(9_000), null);
+  assert.equal(await dwell.stop(9_000), null);
   assert.equal(tracked.length, 2);
 });
 
@@ -82,19 +83,19 @@ test("computeContentEngagement aggregates views, viewers, and dwell per item and
   assert.equal(report.byType.find((t) => t.contentType === "image")!.views, 2);
 });
 
-test("client.watch + analyze answers what users are looking at, end to end", () => {
+test("client.watch + analyze answers what users are looking at, end to end", async () => {
   const dir = tempDir();
   try {
     const client = createUBAClient({ dataDir: dir });
-    client.init();
+    await client.init();
     // One-shot view: user is looking at an image right now.
-    client.view("u1", { contentType: "image", contentId: "hero.jpg", title: "Hero image" }, Date.UTC(2026, 0, 1));
+    await client.view("u1", { contentType: "image", contentId: "hero.jpg", title: "Hero image" }, Date.UTC(2026, 0, 1));
     // Dwell-tracked article read of exactly 2 minutes.
     const dwell = client.watch("u1", { contentType: "article", contentId: "/blog/deep-dive", title: "Deep Dive" });
-    dwell.start(Date.UTC(2026, 0, 1, 1));
-    dwell.stop(Date.UTC(2026, 0, 1, 1, 2));
+    await dwell.start(Date.UTC(2026, 0, 1, 1));
+    await dwell.stop(Date.UTC(2026, 0, 1, 1, 2));
 
-    const report = client.analyze();
+    const report = await client.analyze();
     assert.equal(report.content.totalViews, 2);
     const article = report.content.topContent.find((c) => c.contentId === "/blog/deep-dive")!;
     assert.equal(article.totalDwellMs, 2 * 60_000);
@@ -104,6 +105,6 @@ test("client.watch + analyze answers what users are looking at, end to end", () 
     assert.ok(contentInsight);
     assert.match(contentInsight!.detail, /Deep Dive/);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
   }
 });

@@ -26,20 +26,25 @@ import { createUBAClient } from "uba-ai";
 const uba = createUBAClient({
   funnelSteps: ["signup", "checkout_start", "purchase"],
 });
-uba.init();
+await uba.init();
 
-// Track events anywhere in your app.
-uba.track({ userId: "u1", event: "signup", properties: { plan: "pro" } });
-uba.track({ userId: "u1", event: "checkout_start" });
+// Track events anywhere in your app (async since v0.3.0).
+await uba.track({ userId: "u1", event: "signup", properties: { plan: "pro" } });
+await uba.track({ userId: "u1", event: "checkout_start" });
 
 // Full analysis: sessions, funnel, retention, anomalies, segments, insights.
-const report = uba.analyze();
+const report = await uba.analyze();
 console.log(report.insights);
 
 // Narrative report (LLM when configured, offline template otherwise).
 const { narrative } = await uba.report();
 console.log(narrative);
+
+// Windowed analysis: only look at the last 7 days (pushed down to storage).
+const weekly = await uba.analyze({ since: Date.now() - 7 * 24 * 3600 * 1000 });
 ```
+
+**Migrating from v0.2?** Every storage-touching method is now async - add `await` in front of `init()`, `track()`, `trackBatch()`, `view()`, `events()`, `analyze()`, `clear()`, and `dwell.start()/stop()`. `analyze()` also accepts an options object: `analyze({ funnelSteps, since, until })`. See [CHANGELOG.md](CHANGELOG.md) for the full list.
 
 ## What you get
 
@@ -115,13 +120,13 @@ Beyond generic events, uba-ai models content attention directly: which page / ar
 
 ```ts
 // One-shot: the user is looking at this right now.
-uba.view("u1", { contentType: "image", contentId: "hero.jpg", title: "Hero image" });
+await uba.view("u1", { contentType: "image", contentId: "hero.jpg", title: "Hero image" });
 
 // Measured: start when the content becomes visible, stop when it goes away.
 const dwell = uba.watch("u1", { contentType: "article", contentId: "/blog/deep-dive", title: "Deep Dive" });
-dwell.start();                 // records content_view
+await dwell.start();           // records content_view
 // ... user reads for 2 minutes ...
-dwell.stop();                  // records content_time with dwellMs = 120000
+await dwell.stop();            // records content_time with dwellMs = 120000
 ```
 
 In a browser, wire `start()`/`stop()` to IntersectionObserver, route changes, or `visibilitychange`; on a server or in scripts, call them around the interaction. `stop(ts, visibleRatio)` also accepts the observed visibility ratio to distinguish a glance from a full read.
@@ -155,7 +160,7 @@ import {
 } from "uba-ai";
 ```
 
-Client options: `dataDir`, `sessionTimeoutMs`, `segmentCount`, `anomalyZThreshold`, `storage: { backend: "jsonl" | "sqlite", sqliteFile }`, `ai: { baseUrl, model, apiKeyEnv }`, `funnelSteps`, `retentionDays`. Client methods: `track`, `trackBatch`, `view`, `watch` (DwellTracker), `events`, `analyze`, `report`, `close`.
+Client options: `dataDir`, `sessionTimeoutMs`, `segmentCount`, `anomalyZThreshold`, `storage: { backend: "jsonl" | "sqlite", sqliteFile }`, `ai: { baseUrl, model, apiKeyEnv }`, `funnelSteps`, `retentionDays`. Client methods (all async since v0.3.0): `init`, `track`, `trackBatch`, `view`, `watch` (DwellTracker), `events` (optional `ReadRange`), `analyze` (options or funnel steps), `report`, `clear`, `close`.
 
 ## Importing existing data
 

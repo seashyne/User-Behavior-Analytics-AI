@@ -56,13 +56,21 @@ Usage:
                                     [--url "..."] [--dwell 45000] (ms on content)
   uba import <file.json>            Import an array of events from a JSON file
   uba analyze [--funnel a,b,c]      Run full analysis (--json for machine output)
+                                    [--since 7d|24h|2026-09-01] [--until ...]
   uba report [--ai]                 Print narrative report (--ai forces LLM mode)
+                                    (same --since/--until windowing as analyze)
   uba clear                         Delete all stored events
   uba version                       Show version and patch update history
 
 Global flags:
   --dir <path>   Data directory (default: ./uba-data or saved config)
   --json         Machine-readable output for analyze/report
+
+Time windows (--since/--until):
+  Relative ("7d", "24h", "30m"), ISO date/datetime ("2026-09-01"), or epoch ms.
+  Windowed analysis reads only the requested range - with the sqlite backend
+  the window is pushed down to the timestamp index, so large datasets stay
+  cheap to analyze.
 
 Storage & config:
   All settings live in <dataDir>/uba.config.json with built-in defaults, so
@@ -75,6 +83,26 @@ AI narrative (optional):
   Optional: UBA_AI_BASE_URL (default https://api.openai.com/v1), UBA_AI_MODEL
   (default gpt-4o-mini). Without a key, reports use the built-in offline engine.
 `;
+
+/**
+ * Parse a --since/--until value into an epoch-ms timestamp.
+ * Accepts relative durations ("7d", "24h", "30m", "10s"), ISO dates
+ * ("2026-09-01", "2026-09-01T00:00:00Z"), or raw epoch milliseconds.
+ */
+function parseTimestampArg(value: string, kind: "since" | "until"): number | undefined {
+  const relative = /^(\d+)\s*([smhd])$/.exec(value.trim());
+  if (relative) {
+    const amount = Number(relative[1]);
+    const unit = relative[2] as "s" | "m" | "h" | "d";
+    const multiplier = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[unit];
+    return kind === "since" ? Date.now() - amount * multiplier : Date.now() + amount * multiplier;
+  }
+  const asNumber = Number(value);
+  if (value.trim() !== "" && Number.isFinite(asNumber)) return asNumber;
+  const parsed = Date.parse(value);
+  if (!Number.isNaN(parsed)) return parsed;
+  return undefined;
+}
 
 /** Pretty-print the analysis report as aligned human-readable text. */
 function printAnalysis(report: AnalysisReport, funnelSteps: string[]): void {
@@ -167,7 +195,7 @@ async function main(): Promise<void> {
 
   switch (command) {
     case "init": {
-      store.init();
+      await store.init();
       console.log(`Initialized uba-ai in ${store.config.dataDir}`);
       console.log("Next: uba demo  (synthetic data)  or  uba track page_view --user u1");
       break;
@@ -177,8 +205,8 @@ async function main(): Promise<void> {
       const users = Number(flags["users"] ?? 60);
       const days = Number(flags["days"] ?? 14);
       const demoEvents = generateDemoEvents({ users, days });
-      store.init();
-      store.trackBatch(demoEvents);
+      await store.init();
+      await store.trackBatch(demoEvents);
       console.log(`Generated ${demoEvents.length} demo events for ${users} users over ${days} days.`);
       console.log("Run: uba analyze --funnel signup,checkout_start,purchase   or   uba report");
       break;
@@ -202,7 +230,7 @@ async function main(): Promise<void> {
           break;
         }
       }
-      const event = store.track({ userId, event: eventName, ...(properties ? { properties } : {}) });
+      const event = await store.track({ userId, event: eventName, ...(properties ? { properties } : {}) });
       console.log(`Tracked ${event.event} for ${event.userId} (${event.id})`);
       break;
     }
@@ -239,26 +267,40 @@ async function main(): Promise<void> {
           ...(item.properties ? { properties: item.properties } : {}),
         };
       });
-      store.init();
-      store.trackBatch(inputs);
+      await store.init();
+      await store.trackBatch(inputs);
       console.log(`Imported ${inputs.length} events from ${file}`);
       break;
     }
 
-    case "analyze": {
-      const funnelSteps = typeof flags["funnel"] === "string" ? flags["funnel"].split(",").map((s) => s.trim()).filter(Boolean) : [];
-      const report = client.analyze(funnelSteps);
-      if (flags["json"] === true) {
-        console.log(JSON.stringify(report, null, 2));
-      } else {
-        printAnalysis(report, funnelSteps);
-      }
-      break;
-    }
-
+    case "analyze":
     case "report": {
       const funnelSteps = typeof flags["funnel"] === "string" ? flags["funnel"].split(",").map((s) => s.trim()).filter(Boolean) : [];
-      const report = client.analyze(funnelSteps);
+      const since = typeof flags["since"] === "string" ? parseTimestampArg(flags["since"], "since") : undefined;
+      const until = typeof flags["until"] === "string" ? parseTimestampArg(flags["until"], "until") : undefined;
+      for (const [name, raw, value] of [["since", flags["since"], since], ["until", flags["until"], until]] as const) {
+        if (typeof raw === "string" && value === undefined) {
+          console.error(`--${name} must be a relative duration (7d), ISO date (2026-09-01), or epoch ms`);
+          process.exitCode = 1;
+          return;
+        }
+      }
+      const options = {
+        funnelSteps,
+        ...(since !== undefined ? { since } : {}),
+        ...(until !== undefined ? { until } : {}),
+      };
+      const report = await client.analyze(options);
+
+      if (command === "analyze") {
+        if (flags["json"] === true) {
+          console.log(JSON.stringify(report, null, 2));
+        } else {
+          printAnalysis(report, funnelSteps);
+        }
+        break;
+      }
+
       if (flags["ai"] === true) {
         // --ai forces an LLM attempt; generateNarrative still falls back offline.
         const { generateNarrative } = await import("./ai.ts");
@@ -302,7 +344,7 @@ async function main(): Promise<void> {
         ...(title !== undefined ? { title } : {}),
         ...(url !== undefined ? { url } : {}),
       };
-      store.track(viewEvent(userId, view, now));
+      await store.track(viewEvent(userId, view, now));
       // --dwell also records the paired content_time event with elapsed ms.
       const dwell = flags["dwell"];
       if (typeof dwell === "string") {
@@ -312,7 +354,7 @@ async function main(): Promise<void> {
           process.exitCode = 1;
           break;
         }
-        store.track({
+        await store.track({
           userId,
           event: CONTENT_TIME_EVENT,
           timestamp: now + dwellMs,
@@ -337,7 +379,7 @@ async function main(): Promise<void> {
     }
 
     case "clear": {
-      store.clear();
+      await store.clear();
       console.log("Cleared all stored events (config kept).");
       break;
     }

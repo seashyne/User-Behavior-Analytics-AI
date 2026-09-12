@@ -54,12 +54,16 @@ export function viewEvent(userId: string, view: ContentView, timestamp?: number)
   };
 }
 
+/** A value or a promise of it - lets sync and async sinks share one type. */
+export type MaybePromise<T> = T | Promise<T>;
+
 /**
  * Minimal sink the DwellTracker writes to. EventStore/UBAClient satisfy it
- * structurally, keeping this module decoupled from persistence.
+ * structurally (async since the storage contract became async; plain sync
+ * fakes in tests still work thanks to MaybePromise).
  */
 export interface TrackSink {
-  track(input: TrackInput): UBAEvent;
+  track(input: TrackInput): MaybePromise<UBAEvent>;
 }
 
 /**
@@ -82,9 +86,9 @@ export class DwellTracker {
   }
 
   /** Mark the content visible: records content_view and starts the clock. */
-  start(timestamp: number = Date.now()): void {
+  async start(timestamp: number = Date.now()): Promise<void> {
     this.startedAt = timestamp;
-    this.sink.track(viewEvent(this.userId, this.view, timestamp));
+    await this.sink.track(viewEvent(this.userId, this.view, timestamp));
   }
 
   /**
@@ -93,7 +97,7 @@ export class DwellTracker {
    * intersection ratio to distinguish a glance from a full read.
    * Returns the emitted event, or null when stop() precedes start().
    */
-  stop(timestamp: number = Date.now(), visibleRatio?: number): UBAEvent | null {
+  async stop(timestamp: number = Date.now(), visibleRatio?: number): Promise<UBAEvent | null> {
     if (this.startedAt === null) return null;
     const dwellMs = Math.max(0, timestamp - this.startedAt);
     this.startedAt = null;

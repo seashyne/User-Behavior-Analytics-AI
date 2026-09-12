@@ -4,10 +4,14 @@
  * Typical usage:
  *   import { createUBAClient } from "uba-ai";
  *   const uba = createUBAClient();          // persists to ./uba-data
- *   uba.track({ userId: "u1", event: "signup" });
+ *   await uba.init();
+ *   await uba.track({ userId: "u1", event: "signup" });
  *   const dwell = uba.watch("u1", { contentType: "article", contentId: "/blog/x" });
- *   dwell.start();  ...later...  dwell.stop();   // measures reading time
+ *   await dwell.start();  ...later...  await dwell.stop();   // measures reading time
  *   const report = await uba.report();      // full AI analysis
+ *
+ * All client methods are async since v0.3.0: the storage contract supports
+ * remote SQL backends, so every read/write is awaitable by design.
  */
 import { EventStore } from "./store.ts";
 import { sessionize } from "./sessionizer.ts";
@@ -17,7 +21,7 @@ import { segmentUsers } from "./segment.ts";
 import { generateInsights } from "./insights.ts";
 import { generateNarrative, type NarrativeOptions } from "./ai.ts";
 import { computeContentEngagement, DwellTracker, viewEvent, type ContentView } from "./content.ts";
-import type { AnalysisReport, TrackInput, UBAConfig, UBAEvent } from "./types.ts";
+import type { AnalysisReport, AnalyzeOptions, ReadRange, TrackInput, UBAConfig, UBAEvent } from "./types.ts";
 
 export * from "./types.ts";
 export { EventStore } from "./store.ts";
@@ -33,7 +37,7 @@ export { generateInsights, formatDuration } from "./insights.ts";
 export { generateNarrative, buildOfflineNarrative } from "./ai.ts";
 export type { NarrativeOptions } from "./ai.ts";
 export { DwellTracker, computeContentEngagement, viewEvent, CONTENT_VIEW_EVENT, CONTENT_TIME_EVENT } from "./content.ts";
-export type { ContentView, ContentType, ContentReport, ContentEngagement, ContentTypeEngagement, TrackSink } from "./content.ts";
+export type { ContentView, ContentType, ContentReport, ContentEngagement, ContentTypeEngagement, TrackSink, MaybePromise } from "./content.ts";
 export { version, patchUpdates } from "./version.ts";
 export type { PatchUpdate, VersionRecord } from "./version.ts";
 export { SCHEMA_VERSION, SQLITE_MIGRATIONS, migrateSqlite, migrateJsonlConfigVersion } from "./schema.ts";
@@ -61,18 +65,18 @@ export class UBAClient {
   }
 
   /** Create data dir, persist config, initialize storage. Safe to repeat. */
-  init(): this {
-    this.store.init();
+  async init(): Promise<this> {
+    await this.store.init();
     return this;
   }
 
   /** Record a single user behavior event. */
-  track(input: TrackInput): UBAEvent {
+  async track(input: TrackInput): Promise<UBAEvent> {
     return this.store.track(input);
   }
 
   /** Record many events at once (single batched write). */
-  trackBatch(inputs: TrackInput[]): UBAEvent[] {
+  async trackBatch(inputs: TrackInput[]): Promise<UBAEvent[]> {
     return this.store.trackBatch(inputs);
   }
 
@@ -82,7 +86,7 @@ export class UBAClient {
    * around the content_view event; use watch() when you also want the
    * dwell-time measurement.
    */
-  view(userId: string, view: ContentView, timestamp?: number): UBAEvent {
+  async view(userId: string, view: ContentView, timestamp?: number): Promise<UBAEvent> {
     return this.store.track(viewEvent(userId, view, timestamp));
   }
 
@@ -97,26 +101,32 @@ export class UBAClient {
     return new DwellTracker(this.store, userId, view);
   }
 
-  /** Read all stored events. */
-  events(): UBAEvent[] {
-    return this.store.readAll();
-  }
-
-  /** Release storage resources (closes the SQLite handle when in use). */
-  close(): void {
-    this.store.close();
+  /** Read all stored events, optionally limited to a time window. */
+  async events(range?: ReadRange): Promise<UBAEvent[]> {
+    return this.store.readAll(range);
   }
 
   /**
    * Run the full analysis pipeline: sessionize -> metrics -> funnel ->
    * retention -> content engagement -> anomalies -> segments -> insights.
-   * This is a pure computation over whatever events are currently stored.
+   *
+   * Accepts either an AnalyzeOptions object (time window + funnel steps) or
+   * a plain funnel-steps array (pre-0.3.0 convenience form).
+   *
+   * Passing { since, until } bounds what the storage layer reads at all -
+   * with the SQLite backend the window becomes a WHERE clause on the
+   * timestamp index, keeping memory bounded on large datasets.
    */
-  analyze(funnelSteps?: string[]): AnalysisReport {
-    const events = this.store.readAll();
+  async analyze(options?: AnalyzeOptions | string[]): Promise<AnalysisReport> {
+    const opts: AnalyzeOptions = Array.isArray(options) ? { funnelSteps: options } : (options ?? {});
+    const range: ReadRange | undefined =
+      opts.since !== undefined || opts.until !== undefined
+        ? { ...(opts.since !== undefined ? { since: opts.since } : {}), ...(opts.until !== undefined ? { until: opts.until } : {}) }
+        : undefined;
+    const events = await this.store.readAll(range);
     const sessions = sessionize(events, this.store.config.sessionTimeoutMs);
     const overview = computeOverview(events, sessions);
-    const steps = funnelSteps ?? this.funnelSteps;
+    const steps = opts.funnelSteps ?? this.funnelSteps;
     const retention = computeRetention(events, this.retentionDays);
     const content = computeContentEngagement(events);
     const anomalies = detectAnomalies(overview, this.store.config.anomalyZThreshold);
@@ -137,8 +147,8 @@ export class UBAClient {
   }
 
   /** analyze() plus a narrative report (LLM when configured, otherwise offline template). */
-  async report(funnelSteps?: string[], narrativeOptions?: NarrativeOptions): Promise<{ analysis: AnalysisReport; narrative: string; source: "llm" | "offline" }> {
-    const analysis = this.analyze(funnelSteps);
+  async report(options?: AnalyzeOptions | string[], narrativeOptions?: NarrativeOptions): Promise<{ analysis: AnalysisReport; narrative: string; source: "llm" | "offline" }> {
+    const analysis = await this.analyze(options);
     const cfg = this.store.config.ai;
     const narrative = await generateNarrative(analysis, {
       ...(cfg ? { baseUrl: cfg.baseUrl, model: cfg.model, apiKeyEnv: cfg.apiKeyEnv } : {}),

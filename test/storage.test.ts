@@ -1,6 +1,6 @@
 /**
  * Storage backend and config tests: JSONL/SQLite round-trip equivalence,
- * lazy sqlite availability, and sectioned config merging with defaults.
+ * backend selection, sectioned config merging, and time-windowed reads.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -22,17 +22,17 @@ const sampleEvents: Array<{ userId: string; event: string; timestamp: number; pr
   { userId: "u2", event: "content_view", timestamp: 1500, properties: { contentType: "image", contentId: "img-1", dwellMs: 4200 } },
 ];
 
-test("sqlite backend round-trips events identically to jsonl", () => {
+test("sqlite backend round-trips events identically to jsonl", async () => {
   const dir = tempDir();
   const jsonl = new JsonlStorage(dir);
   const sqlite = new SqliteStorage(dir, "test.sqlite");
   try {
     for (const storage of [jsonl, sqlite]) {
-      storage.init();
-      storage.appendMany(sampleEvents.map((e, i) => ({ id: `id-${i}`, ...e })) as UBAEvent[]);
+      await storage.init();
+      await storage.appendMany(sampleEvents.map((e, i) => ({ id: `id-${i}`, ...e })) as UBAEvent[]);
     }
-    const fromJsonl = jsonl.readAll();
-    const fromSqlite = sqlite.readAll();
+    const fromJsonl = await jsonl.readAll();
+    const fromSqlite = await sqlite.readAll();
     assert.equal(fromSqlite.length, 3);
     // Both backends return events ordered by timestamp (1000, 1500, 2000).
     assert.deepEqual(fromSqlite.map((e) => e.id), fromJsonl.map((e) => e.id));
@@ -45,37 +45,60 @@ test("sqlite backend round-trips events identically to jsonl", () => {
     // Session id column round-trips as absent when never set.
     assert.equal("sessionId" in fromSqlite[0]!, false);
 
-    sqlite.clear();
-    assert.equal(sqlite.readAll().length, 0);
+    await sqlite.clear();
+    assert.equal((await sqlite.readAll()).length, 0);
     assert.ok(existsSync(join(dir, "test.sqlite")), "sqlite file should exist");
   } finally {
     // Always close before cleanup: an open handle locks the file on Windows.
-    sqlite.close();
-    jsonl.close();
+    await sqlite.close();
+    await jsonl.close();
     rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
   }
 });
 
-test("EventStore selects backend from config and persists it", () => {
+test("readAll honors since/until windows in both backends", async () => {
+  const dir = tempDir();
+  const jsonl = new JsonlStorage(join(dir, "jsonl"));
+  const sqlite = new SqliteStorage(join(dir, "sql"), "win.sqlite");
+  try {
+    for (const storage of [jsonl, sqlite]) {
+      await storage.init();
+      await storage.appendMany([1000, 2000, 3000, 4000].map((t, i) => ({ id: `w-${t}`, userId: "u1", event: "tick", timestamp: t + i * 0 })) as UBAEvent[]);
+    }
+    for (const storage of [jsonl, sqlite]) {
+      // Inclusive since, exclusive until - consistent across backends.
+      const mid = await storage.readAll({ since: 1500, until: 4000 });
+      assert.deepEqual(mid.map((e) => e.timestamp), [2000, 3000], `${storage.constructor.name} window`);
+      const sinceOnly = await storage.readAll({ since: 3000 });
+      assert.deepEqual(sinceOnly.map((e) => e.timestamp), [3000, 4000]);
+      const untilOnly = await storage.readAll({ until: 2000 });
+      assert.deepEqual(untilOnly.map((e) => e.timestamp), [1000]);
+    }
+  } finally {
+    await sqlite.close();
+    await jsonl.close();
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+  }
+});
+
+test("EventStore selects backend from config and persists it", async () => {
   const dir = tempDir();
   const store = new EventStore({ dataDir: dir, storage: { backend: "sqlite", sqliteFile: "uba.sqlite" } });
-  const reopened = EventStore.loadFrom(dir);
   try {
-    store.init();
-    store.trackBatch(sampleEvents);
-    assert.equal(store.readAll().length, 3);
+    await store.init();
+    await store.trackBatch(sampleEvents);
+    assert.equal((await store.readAll()).length, 3);
     assert.ok(existsSync(join(dir, "uba.sqlite")));
     assert.ok(!existsSync(join(dir, "events.jsonl")), "jsonl file should not be created for sqlite backend");
 
     // Reopening from the data dir must pick sqlite again via saved config.
     const loaded = EventStore.loadFrom(dir);
     assert.equal(loaded.config.storage.backend, "sqlite");
-    assert.equal(loaded.readAll().length, 3);
-    loaded.close();
+    assert.equal((await loaded.readAll()).length, 3);
+    await loaded.close();
   } finally {
     // Close handles before cleanup (Windows file locking).
-    store.close();
-    reopened.close();
+    await store.close();
     rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
   }
 });
@@ -98,6 +121,6 @@ test("createStorage factory returns the requested implementation", () => {
     assert.ok(createStorage(dir, "jsonl", "uba.sqlite") instanceof JsonlStorage);
     assert.ok(createStorage(dir, "sqlite", "uba.sqlite") instanceof SqliteStorage);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
   }
 });

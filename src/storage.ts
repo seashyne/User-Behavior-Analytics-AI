@@ -1,12 +1,20 @@
 /**
- * Storage layer: pluggable persistence behind one interface.
+ * Storage layer: pluggable persistence behind one async interface.
+ *
+ * Every method returns a Promise. That contract is what makes remote SQL
+ * backends (Postgres, MySQL, ClickHouse adapters) implementable without a
+ * second API surface: local file backends resolve immediately, remote ones
+ * await network I/O, and consumers cannot tell the difference.
  *
  * Two backends ship with the package, selected via config.storage.backend:
  * - "jsonl":  append-only text file (default). Zero requirements, human
  *   readable, trivial to back up or grep.
  * - "sqlite": single-file SQL database via Node's built-in node:sqlite
- *   module (Node >= 22.5). Still zero external dependencies, but gives
- *   indexed queries and transactional writes for larger datasets.
+ *   module (Node >= 22.5). Indexed queries and transactional writes.
+ *
+ * readAll() accepts a time window (ReadRange). The SQLite backend pushes
+ * the window into the query so the timestamp index limits what leaves the
+ * database - the foundation for bounded-memory analysis of large datasets.
  *
  * The SQLite backend is loaded lazily so Node 20 users on the default JSONL
  * backend never touch the node:sqlite module.
@@ -15,7 +23,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { migrateSqlite } from "./schema.ts";
-import type { UBAEvent } from "./types.ts";
+import type { ReadRange, UBAEvent } from "./types.ts";
 
 // ESM-compatible require, used only for the lazy node:sqlite load below.
 const nodeRequire = createRequire(import.meta.url);
@@ -23,23 +31,27 @@ const nodeRequire = createRequire(import.meta.url);
 /** Persistence contract implemented by every storage backend. */
 export interface EventStorage {
   /** Prepare the underlying storage (create file/table). Idempotent. */
-  init(): void;
+  init(): Promise<void>;
   /** Persist one already-complete event. */
-  append(event: UBAEvent): void;
+  append(event: UBAEvent): Promise<void>;
   /** Persist many events; backends may batch for performance. */
-  appendMany(events: UBAEvent[]): void;
-  /** Return all stored events ordered by timestamp ascending. */
-  readAll(): UBAEvent[];
+  appendMany(events: UBAEvent[]): Promise<void>;
+  /**
+   * Return stored events ordered by timestamp ascending. When a range is
+   * given, backends must filter at the source (SQL WHERE / index scan), not
+   * load everything and filter afterwards.
+   */
+  readAll(range?: ReadRange): Promise<UBAEvent[]>;
   /** Remove all stored events but keep the storage itself usable. */
-  clear(): void;
+  clear(): Promise<void>;
   /**
    * Release underlying resources (open file handles). Required on Windows,
    * where an open SQLite database locks its file against deletion.
    */
-  close(): void;
+  close(): Promise<void>;
 }
 
-/** Append-only JSON Lines file storage (the v0.1 default behavior). */
+/** Append-only JSON Lines file storage (the default backend). */
 export class JsonlStorage implements EventStorage {
   private readonly path: string;
 
@@ -47,31 +59,34 @@ export class JsonlStorage implements EventStorage {
     this.path = join(dataDir, "events.jsonl");
   }
 
-  init(): void {
+  async init(): Promise<void> {
     mkdirSync(join(this.path, ".."), { recursive: true });
     if (!existsSync(this.path)) writeFileSync(this.path, "", "utf8");
   }
 
-  append(event: UBAEvent): void {
-    this.init();
-    appendFileSync(this.path, JSON.stringify(event) + "\n", "utf8");
+  async append(event: UBAEvent): Promise<void> {
+    await this.appendMany([event]);
   }
 
-  appendMany(events: UBAEvent[]): void {
+  async appendMany(events: UBAEvent[]): Promise<void> {
     if (events.length === 0) return;
-    this.init();
+    this.initSync();
     // One write for the whole batch instead of one per event.
     appendFileSync(this.path, events.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
   }
 
-  readAll(): UBAEvent[] {
+  async readAll(range?: ReadRange): Promise<UBAEvent[]> {
     if (!existsSync(this.path)) return [];
     const events: UBAEvent[] = [];
     for (const line of readFileSync(this.path, "utf8").split("\n")) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
-        events.push(JSON.parse(trimmed) as UBAEvent);
+        const event = JSON.parse(trimmed) as UBAEvent;
+        // Whole-file format: the window can only be applied after parsing.
+        if (range?.since !== undefined && event.timestamp < range.since) continue;
+        if (range?.until !== undefined && event.timestamp >= range.until) continue;
+        events.push(event);
       } catch {
         // Skip corrupt lines: a partial write must not brick the dataset.
       }
@@ -80,12 +95,16 @@ export class JsonlStorage implements EventStorage {
     return events;
   }
 
-  clear(): void {
+  async clear(): Promise<void> {
     if (existsSync(this.path)) writeFileSync(this.path, "", "utf8");
   }
 
-  close(): void {
+  async close(): Promise<void> {
     // Nothing to release: the JSONL file is opened per write and never held.
+  }
+
+  private initSync(): void {
+    mkdirSync(join(this.path, ".."), { recursive: true });
   }
 }
 
@@ -102,7 +121,7 @@ export class SqliteStorage implements EventStorage {
     this.path = join(dataDir, sqliteFile);
   }
 
-  /** Open (once) and ensure schema + indexes exist. */
+  /** Open (once) and ensure schema, indexes, and schema version exist. */
   private open(): import("node:sqlite").DatabaseSync {
     if (this.db) return this.db;
     mkdirSync(join(this.path, ".."), { recursive: true });
@@ -134,15 +153,15 @@ export class SqliteStorage implements EventStorage {
     return db;
   }
 
-  init(): void {
+  async init(): Promise<void> {
     this.open();
   }
 
-  append(event: UBAEvent): void {
-    this.appendMany([event]);
+  async append(event: UBAEvent): Promise<void> {
+    await this.appendMany([event]);
   }
 
-  appendMany(events: UBAEvent[]): void {
+  async appendMany(events: UBAEvent[]): Promise<void> {
     if (events.length === 0) return;
     const db = this.open();
     const stmt = db.prepare(
@@ -161,13 +180,28 @@ export class SqliteStorage implements EventStorage {
     }
   }
 
-  readAll(): UBAEvent[] {
+  async readAll(range?: ReadRange): Promise<UBAEvent[]> {
     const db = this.open();
-    const rows = db.prepare("SELECT id, user_id, event, timestamp, session_id, properties FROM events ORDER BY timestamp ASC").all() as Array<{
+    // The window is pushed into the query so the timestamp index decides
+    // what is read at all; JS never sees out-of-window rows.
+    const conditions: string[] = [];
+    const params: number[] = [];
+    if (range?.since !== undefined) {
+      conditions.push("timestamp >= ?");
+      params.push(range.since);
+    }
+    if (range?.until !== undefined) {
+      conditions.push("timestamp < ?");
+      params.push(range.until);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const rows = db
+      .prepare(`SELECT id, user_id, event, timestamp, session_id, properties FROM events ${where} ORDER BY timestamp ASC`)
+      .all(...params) as Array<{
       id: string;
       user_id: string;
       event: string;
-      timestamp: number;
+      timestamp: number | bigint;
       session_id: string | null;
       properties: string | null;
     }>;
@@ -181,11 +215,11 @@ export class SqliteStorage implements EventStorage {
     }));
   }
 
-  clear(): void {
+  async clear(): Promise<void> {
     this.open().exec("DELETE FROM events");
   }
 
-  close(): void {
+  async close(): Promise<void> {
     // Release the database file handle; on Windows an open handle locks the
     // file and would block deletion (e.g. rmSync in tests or uba clear).
     if (this.db) {

@@ -21,11 +21,11 @@ function openRawDb(path: string): DatabaseSync {
   return new DatabaseSync(path);
 }
 
-test("sqlite backend stamps user_version to SCHEMA_VERSION on open", () => {
+test("sqlite backend stamps user_version to SCHEMA_VERSION on open", async () => {
   const dir = tempDir();
   const storage = new SqliteStorage(dir, "stamped.sqlite");
   try {
-    storage.init();
+    await storage.init();
     const db = openRawDb(join(dir, "stamped.sqlite"));
     try {
       const row = db.prepare("PRAGMA user_version").get() as { user_version: number };
@@ -34,7 +34,7 @@ test("sqlite backend stamps user_version to SCHEMA_VERSION on open", () => {
       db.close();
     }
   } finally {
-    storage.close();
+    await storage.close();
     rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
   }
 });
@@ -64,15 +64,15 @@ test("migrateJsonlConfigVersion upgrades missing or old markers", () => {
   assert.deepEqual(migrateJsonlConfigVersion(SCHEMA_VERSION), { from: SCHEMA_VERSION, to: SCHEMA_VERSION });
 });
 
-test("EventStore.init persists the upgraded schemaVersion marker in config", () => {
+test("EventStore.init persists the upgraded schemaVersion marker in config", async () => {
   const dir = tempDir();
   const store = new EventStore({ dataDir: dir, schemaVersion: 0 });
   try {
-    store.init();
+    await store.init();
     const reopened = EventStore.loadFrom(dir);
     assert.equal(reopened.config.schemaVersion, SCHEMA_VERSION);
   } finally {
-    store.close();
+    await store.close();
     rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
   }
 });

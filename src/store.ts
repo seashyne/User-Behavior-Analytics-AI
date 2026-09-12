@@ -2,6 +2,9 @@
  * Event store: the ingestion front-door on top of the pluggable storage
  * layer. Handles id/timestamp generation, config persistence, and backend
  * selection, while storage.ts owns the actual bytes on disk.
+ *
+ * All mutating/reading methods are async to match the EventStorage
+ * contract, so remote SQL backends can slot in without a second API.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -9,7 +12,7 @@ import { randomUUID } from "node:crypto";
 import { resolveConfig, type UBAConfig } from "./config.ts";
 import { createStorage, type EventStorage } from "./storage.ts";
 import { migrateJsonlConfigVersion } from "./schema.ts";
-import type { TrackInput, UBAEvent } from "./types.ts";
+import type { ReadRange, TrackInput, UBAEvent } from "./types.ts";
 
 export { DEFAULT_CONFIG } from "./config.ts";
 export type { UBAConfig, StorageConfig, AIConfig } from "./config.ts";
@@ -32,13 +35,13 @@ export class EventStore {
   }
 
   /** Create the data directory, persist config, and initialize storage. */
-  init(): void {
+  async init(): Promise<void> {
     mkdirSync(this.config.dataDir, { recursive: true });
     // Upgrade the JSONL schema marker (config-based; SQLite stamps its own
     // version via PRAGMA inside migrateSqlite when the backend opens).
     this.config.schemaVersion = migrateJsonlConfigVersion(this.config.schemaVersion).to;
     writeFileSync(this.configPath, JSON.stringify(this.config, null, 2), "utf8");
-    this.storage.init();
+    await this.storage.init();
   }
 
   /**
@@ -60,7 +63,7 @@ export class EventStore {
   }
 
   /** Append one event, generating id/timestamp when not supplied. */
-  track(input: TrackInput): UBAEvent {
+  async track(input: TrackInput): Promise<UBAEvent> {
     const event: UBAEvent = {
       id: input.id ?? randomUUID(),
       userId: input.userId,
@@ -68,12 +71,12 @@ export class EventStore {
       timestamp: input.timestamp ?? Date.now(),
       ...(input.properties ? { properties: input.properties } : {}),
     };
-    this.storage.append(event);
+    await this.storage.append(event);
     return event;
   }
 
   /** Append many events in one batched write (used by import and demo). */
-  trackBatch(inputs: TrackInput[]): UBAEvent[] {
+  async trackBatch(inputs: TrackInput[]): Promise<UBAEvent[]> {
     const events: UBAEvent[] = inputs.map((input) => ({
       id: input.id ?? randomUUID(),
       userId: input.userId,
@@ -81,22 +84,22 @@ export class EventStore {
       timestamp: input.timestamp ?? Date.now(),
       ...(input.properties ? { properties: input.properties } : {}),
     }));
-    this.storage.appendMany(events);
+    await this.storage.appendMany(events);
     return events;
   }
 
-  /** Read every stored event, ordered by timestamp. */
-  readAll(): UBAEvent[] {
-    return this.storage.readAll();
+  /** Read stored events ordered by timestamp, optionally time-windowed. */
+  async readAll(range?: ReadRange): Promise<UBAEvent[]> {
+    return this.storage.readAll(range);
   }
 
   /** Delete all stored events (keeps config). Mostly useful in tests. */
-  clear(): void {
-    this.storage.clear();
+  async clear(): Promise<void> {
+    await this.storage.clear();
   }
 
   /** Release storage resources (closes the SQLite handle when in use). */
-  close(): void {
-    this.storage.close();
+  async close(): Promise<void> {
+    await this.storage.close();
   }
 }
